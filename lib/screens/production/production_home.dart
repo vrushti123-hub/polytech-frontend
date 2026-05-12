@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import '../../theme/app_theme.dart';
 import '../../models/models.dart';
 import '../../services/api_service.dart';
 import '../../widgets/widgets.dart';
+import '../rawmaterial/rm_home.dart';
 
 // ── Production Home ───────────────────────────────────────────
 class ProductionHome extends StatefulWidget {
@@ -65,6 +67,11 @@ class _ProductionHomeState extends State<ProductionHome>
         .where((e) => e.date.day == DateTime.now().day)
         .toList();
     final todayNet = today.fold(0, (s, e) => s + e.netQty);
+    final pendingTasks = _tasks
+        .where(
+          (task) => task.status == 'pending' || task.status == 'in_progress',
+        )
+        .toList();
 
     return Scaffold(
       backgroundColor: AppTheme.surfaceWhite,
@@ -83,6 +90,31 @@ class _ProductionHomeState extends State<ProductionHome>
             ),
           ],
         ),
+        actions: [
+          if (!_loading)
+            NotificationButton(
+              count: pendingTasks.length,
+              onTap: () => showNotificationSheet(
+                context,
+                title: 'Notifications',
+                notifications: pendingTasks
+                    .map(
+                      (task) => AppNotification(
+                        icon: Icons.precision_manufacturing_outlined,
+                        title: task.productName,
+                        subtitle:
+                            '${task.requiredQty} pcs • ${task.color} • ${task.status.replaceAll('_', ' ')}',
+                        color: task.status == 'in_progress'
+                            ? AppTheme.primaryBlue
+                            : AppTheme.warningAmber,
+                        onTap: () => _tabCtrl.animateTo(0),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          const SizedBox(width: 4),
+        ],
         bottom: TabBar(
           controller: _tabCtrl,
           labelColor: Colors.white,
@@ -134,6 +166,7 @@ class _ProductionHomeState extends State<ProductionHome>
                       _TaskBoardTab(
                         key: ValueKey(_refreshKey),
                         tasks: _tasks,
+                        products: _products,
                         onRefresh: _loadAll,
                       ),
                       _ProductionEntryTab(
@@ -204,10 +237,12 @@ class _MiniStat extends StatelessWidget {
 // ── Task Board Tab ────────────────────────────────────────────
 class _TaskBoardTab extends StatefulWidget {
   final List<ProductionTask> tasks;
+  final List<Product> products;
   final VoidCallback onRefresh;
   const _TaskBoardTab({
     super.key,
     required this.tasks,
+    required this.products,
     required this.onRefresh,
   });
 
@@ -216,42 +251,248 @@ class _TaskBoardTab extends StatefulWidget {
 }
 
 class _TaskBoardTabState extends State<_TaskBoardTab> {
+  Set<int> get _activeMachines => widget.tasks
+      .where((task) => task.status == 'in_progress')
+      .map((task) => task.assignedMachine)
+      .whereType<int>()
+      .toSet();
+
   @override
   Widget build(BuildContext context) {
-    if (widget.tasks.isEmpty) {
-      return const EmptyState(
-        icon: Icons.task_alt,
-        title: 'No Tasks',
-        subtitle: 'All production tasks completed',
-      );
-    }
     return RefreshIndicator(
       onRefresh: () async => widget.onRefresh(),
-      child: ListView.builder(
+      child: ListView(
         padding: const EdgeInsets.all(16),
-        itemCount: widget.tasks.length,
-        itemBuilder: (_, i) => _TaskCard(
-          task: widget.tasks[i],
-          onAssign: (machine) async {
-            await ApiService.updateProductionTask(
-              widget.tasks[i].id,
-              status: 'in_progress',
-              assignedMachine: machine,
-              isCompleted: false,
-            );
-            widget.onRefresh();
-          },
-        ),
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: SectionHeader(
+                  title: 'Task Board',
+                  subtitle: 'Assign machines and track active production',
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: _showCreateTaskDialog,
+                icon: const Icon(Icons.add_task_outlined, size: 18),
+                label: const Text('Add Task'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (widget.tasks.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 80),
+              child: EmptyState(
+                icon: Icons.task_alt,
+                title: 'No Tasks',
+                subtitle: 'All production tasks completed',
+              ),
+            )
+          else
+            ...widget.tasks.map(
+              (task) => _TaskCard(
+                task: task,
+                unavailableMachines: _activeMachines,
+                onAssign: (machine) async {
+                  await ApiService.updateProductionTask(
+                    task.id,
+                    status: 'in_progress',
+                    assignedMachine: machine,
+                    isCompleted: false,
+                  );
+                  widget.onRefresh();
+                },
+                onComplete: () async {
+                  await ApiService.updateProductionTask(
+                    task.id,
+                    status: 'completed',
+                    assignedMachine: task.assignedMachine,
+                    isCompleted: true,
+                  );
+                  widget.onRefresh();
+                },
+              ),
+            ),
+        ],
       ),
     );
+  }
+
+  Future<void> _showCreateTaskDialog() async {
+    Product? selectedProduct;
+    String? selectedBrand;
+    String? selectedColor;
+    final qtyCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    final sortedProducts = List<Product>.from(widget.products)
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    Map<String, List<String>> brandOptionsFor(Product product) {
+      if (product.brandOptions.isNotEmpty) return product.brandOptions;
+      return {product.brand: product.colors};
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (ctx, setDState) {
+          final brandOptions = selectedProduct == null
+              ? <String, List<String>>{}
+              : brandOptionsFor(selectedProduct!);
+          final availableColors = selectedBrand == null
+              ? const <String>[]
+              : brandOptions[selectedBrand] ?? const <String>[];
+
+          return AlertDialog(
+            title: const Text('Add Production Task'),
+            content: SizedBox(
+              width: 420,
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<Product>(
+                      value: selectedProduct,
+                      hint: const Text('Select product'),
+                      items: sortedProducts
+                          .map(
+                            (product) => DropdownMenuItem(
+                              value: product,
+                              child: Text(
+                                '${product.name} (${product.brand})',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (product) => setDState(() {
+                        selectedProduct = product;
+                        selectedBrand = product?.brandOptions.isNotEmpty == true
+                            ? product!.brandOptions.keys.first
+                            : product?.brand;
+                        selectedColor = null;
+                      }),
+                      validator: (value) => value == null ? 'Required' : null,
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: selectedBrand,
+                      hint: const Text('Select brand'),
+                      items: brandOptions.keys
+                          .map(
+                            (brand) => DropdownMenuItem(
+                              value: brand,
+                              child: Text(brand),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: selectedProduct == null
+                          ? null
+                          : (brand) => setDState(() {
+                              selectedBrand = brand;
+                              selectedColor = null;
+                            }),
+                      validator: (value) => value == null ? 'Required' : null,
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: selectedColor,
+                      hint: const Text('Select color'),
+                      items: availableColors
+                          .map(
+                            (color) => DropdownMenuItem(
+                              value: color,
+                              child: Text(color),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: selectedBrand == null
+                          ? null
+                          : (color) => setDState(() => selectedColor = color),
+                      validator: (value) => value == null ? 'Required' : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: qtyCtrl,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: 'Required quantity',
+                        prefixIcon: Icon(Icons.numbers_outlined),
+                      ),
+                      validator: (value) {
+                        final qty = int.tryParse(value ?? '');
+                        if (qty == null || qty <= 0) return 'Enter quantity';
+                        return null;
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (!formKey.currentState!.validate()) return;
+                  final product = selectedProduct!;
+                  final created = await ApiService.createProductionTask(
+                    ProductionTask(
+                      id: 'T${DateTime.now().millisecondsSinceEpoch}',
+                      productId: product.id,
+                      productName: product.name,
+                      brand: selectedBrand!,
+                      color: selectedColor!,
+                      requiredQty: int.parse(qtyCtrl.text),
+                      status: 'pending',
+                    ),
+                  );
+                  if (!mounted) return;
+                  Navigator.of(context, rootNavigator: true).pop();
+                  widget.onRefresh();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        created
+                            ? 'Production task added'
+                            : 'Could not add production task',
+                      ),
+                      backgroundColor: created
+                          ? AppTheme.successGreen
+                          : AppTheme.dangerRed,
+                    ),
+                  );
+                },
+                child: const Text('Create Task'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    qtyCtrl.dispose();
   }
 }
 
 class _TaskCard extends StatelessWidget {
   final ProductionTask task;
+  final Set<int> unavailableMachines;
   final ValueChanged<int> onAssign;
+  final VoidCallback onComplete;
 
-  const _TaskCard({required this.task, required this.onAssign});
+  const _TaskCard({
+    required this.task,
+    required this.unavailableMachines,
+    required this.onAssign,
+    required this.onComplete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -405,6 +646,19 @@ class _TaskCard extends StatelessWidget {
                       ),
                     ),
                   ),
+                if (task.status == 'in_progress')
+                  TextButton.icon(
+                    onPressed: onComplete,
+                    icon: const Icon(Icons.check_circle_outline, size: 16),
+                    label: const Text('Mark Complete'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.successGreen,
+                      textStyle: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -437,32 +691,52 @@ class _TaskCard extends StatelessWidget {
                 runSpacing: 8,
                 children: List.generate(20, (i) {
                   final m = i + 1;
+                  final busy = unavailableMachines.contains(m);
                   return GestureDetector(
-                    onTap: () => setDState(() => selected = m),
+                    onTap: busy ? null : () => setDState(() => selected = m),
                     child: Container(
                       width: 44,
                       height: 44,
                       decoration: BoxDecoration(
                         color: selected == m
                             ? AppTheme.primaryBlue
+                            : busy
+                            ? AppTheme.borderGrey
                             : AppTheme.surfaceWhite,
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
                           color: selected == m
                               ? AppTheme.primaryBlue
+                              : busy
+                              ? AppTheme.textLight
                               : AppTheme.borderGrey,
                         ),
                       ),
                       child: Center(
-                        child: Text(
-                          '$m',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                            color: selected == m
-                                ? Colors.white
-                                : AppTheme.textPrimary,
-                          ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              '$m',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                                color: selected == m
+                                    ? Colors.white
+                                    : busy
+                                    ? AppTheme.textSecondary
+                                    : AppTheme.textPrimary,
+                              ),
+                            ),
+                            if (busy)
+                              const Text(
+                                'Busy',
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  color: AppTheme.textSecondary,
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     ),
@@ -539,6 +813,120 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
     return _brandOptions[_selectedBrand] ?? const [];
   }
 
+  Map<String, List<String>> _brandOptionsFor(Product product) {
+    if (product.brandOptions.isNotEmpty) return product.brandOptions;
+    return {product.brand: product.colors};
+  }
+
+  Product? _productForEntry(ProductionEntry entry) {
+    for (final product in widget.products) {
+      if (product.id == entry.productId) return product;
+    }
+    for (final product in widget.products) {
+      if (product.name.toLowerCase() == entry.productName.toLowerCase()) {
+        return product;
+      }
+    }
+    return null;
+  }
+
+  String _qtyLabel(double value, String unit) {
+    final qty = value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toStringAsFixed(1);
+    return '$qty $unit'.trim();
+  }
+
+  Future<bool> _ensureRawMaterialAvailable() async {
+    final check = await ApiService.checkRawMaterialAvailability(
+      brand: _selectedBrand!,
+      color: _selectedColor!,
+    );
+
+    if (!mounted) return false;
+    if (check == null) {
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ApiService.lastError ?? 'Raw material check failed'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+      return false;
+    }
+
+    if (check.ok) return true;
+
+    setState(() => _saving = false);
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Raw Material Shortage'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Add these materials in GRN before production entry:',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            ...check.shortages.map(
+              (item) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      color: AppTheme.warningAmber,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${item.materialName}: need ${_qtyLabel(item.requiredQty, item.unit)}, available ${item.availableQty.toStringAsFixed(1)}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => RMHome(
+                    initialTab: 1,
+                    initialColor: _selectedColor,
+                    initialRequirements: check.requirements,
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.receipt_long_outlined),
+            label: const Text('Go to GRN'),
+          ),
+        ],
+      ),
+    );
+    return false;
+  }
+
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if (_machine == null ||
@@ -553,8 +941,20 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
       );
       return;
     }
+    if (_net <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Net production must be greater than 0'),
+          backgroundColor: AppTheme.warningAmber,
+        ),
+      );
+      return;
+    }
 
     setState(() => _saving = true);
+
+    final rawMaterialOk = await _ensureRawMaterialAvailable();
+    if (!rawMaterialOk) return;
 
     final entry = ProductionEntry(
       id: 'PE${DateTime.now().millisecondsSinceEpoch}',
@@ -569,7 +969,22 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
       date: DateTime.now(),
     );
 
-    await ApiService.createProductionEntry(entry);
+    final saved = await ApiService.createProductionEntry(entry);
+
+    if (!saved) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ApiService.lastError ??
+                'Production entry failed. Inventory not updated.',
+          ),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+      return;
+    }
 
     setState(() => _saving = false);
     widget.onSaved();
@@ -595,6 +1010,368 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
     }
   }
 
+  Future<void> _showEditEntryDialog(ProductionEntry entry) async {
+    final formKey = GlobalKey<FormState>();
+    final products = List<Product>.from(widget.products)
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    Product? selectedProduct = _productForEntry(entry);
+    String? selectedBrand = entry.brand;
+    String? selectedColor = entry.color;
+    int? machine = entry.machineNumber;
+    final producedCtrl = TextEditingController(
+      text: entry.producedQty.toString(),
+    );
+    final rejectedCtrl = TextEditingController(
+      text: entry.rejectedQty.toString(),
+    );
+    final mixedCtrl = TextEditingController(
+      text: entry.mixedColorQty.toString(),
+    );
+    bool saving = false;
+
+    int netQty() {
+      final produced = int.tryParse(producedCtrl.text) ?? 0;
+      final rejected = int.tryParse(rejectedCtrl.text) ?? 0;
+      final mixed = int.tryParse(mixedCtrl.text) ?? 0;
+      return produced - rejected - mixed;
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: !saving,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDState) {
+          final brandOptions = selectedProduct == null
+              ? <String, List<String>>{}
+              : _brandOptionsFor(selectedProduct!);
+          final colors = selectedBrand == null
+              ? const <String>[]
+              : brandOptions[selectedBrand] ?? const <String>[];
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            title: const Text('Edit Production Entry'),
+            content: SizedBox(
+              width: 430,
+              child: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      DropdownButtonFormField<int>(
+                        value: machine,
+                        decoration: const InputDecoration(
+                          labelText: 'Machine',
+                          prefixIcon: Icon(Icons.precision_manufacturing),
+                        ),
+                        items: List.generate(
+                          15,
+                          (i) => DropdownMenuItem(
+                            value: i + 1,
+                            child: Text('Machine ${i + 1}'),
+                          ),
+                        ),
+                        onChanged: saving
+                            ? null
+                            : (v) => setDState(() => machine = v),
+                        validator: (v) => v == null ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<Product>(
+                        value: selectedProduct,
+                        decoration: const InputDecoration(
+                          labelText: 'Product',
+                          prefixIcon: Icon(Icons.chair_outlined),
+                        ),
+                        items: products
+                            .map(
+                              (product) => DropdownMenuItem(
+                                value: product,
+                                child: Text(
+                                  product.name,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: saving
+                            ? null
+                            : (product) => setDState(() {
+                                selectedProduct = product;
+                                final options = product == null
+                                    ? <String, List<String>>{}
+                                    : _brandOptionsFor(product);
+                                selectedBrand = options.keys.isEmpty
+                                    ? null
+                                    : options.keys.first;
+                                selectedColor = null;
+                              }),
+                        validator: (v) => v == null ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: brandOptions.containsKey(selectedBrand)
+                            ? selectedBrand
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: 'Brand',
+                          prefixIcon: Icon(Icons.local_offer_outlined),
+                        ),
+                        items: brandOptions.keys
+                            .map(
+                              (brand) => DropdownMenuItem(
+                                value: brand,
+                                child: Text(brand),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: saving
+                            ? null
+                            : (brand) => setDState(() {
+                                selectedBrand = brand;
+                                selectedColor = null;
+                              }),
+                        validator: (v) => v == null ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: colors.contains(selectedColor)
+                            ? selectedColor
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: 'Color',
+                          prefixIcon: Icon(Icons.palette_outlined),
+                        ),
+                        items: colors
+                            .map(
+                              (color) => DropdownMenuItem(
+                                value: color,
+                                child: Text(color),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: saving
+                            ? null
+                            : (color) => setDState(() => selectedColor = color),
+                        validator: (v) => v == null ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: producedCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Produced',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              onChanged: (_) => setDState(() {}),
+                              validator: (v) =>
+                                  (int.tryParse(v ?? '') ?? 0) <= 0
+                                  ? 'Required'
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextFormField(
+                              controller: rejectedCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Rejected',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              onChanged: (_) => setDState(() {}),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextFormField(
+                              controller: mixedCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Mixed',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              onChanged: (_) => setDState(() {}),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.lightGreen,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.successGreen),
+                        ),
+                        child: Text(
+                          '${netQty()} net pcs',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            color: AppTheme.successGreen,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: saving ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton.icon(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        if (!formKey.currentState!.validate()) return;
+                        if (netQty() <= 0) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Net production must be greater than 0',
+                              ),
+                              backgroundColor: AppTheme.warningAmber,
+                            ),
+                          );
+                          return;
+                        }
+                        setDState(() => saving = true);
+                        final product = selectedProduct!;
+                        final updated = ProductionEntry(
+                          id: entry.id,
+                          machineNumber: machine!,
+                          productId: product.id,
+                          productName: product.name,
+                          brand: selectedBrand!,
+                          color: selectedColor!,
+                          producedQty: int.parse(producedCtrl.text),
+                          rejectedQty: int.tryParse(rejectedCtrl.text) ?? 0,
+                          mixedColorQty: int.tryParse(mixedCtrl.text) ?? 0,
+                          date: entry.date,
+                        );
+                        final ok = await ApiService.updateProductionEntry(
+                          updated,
+                        );
+                        if (!mounted ||
+                            !context.mounted ||
+                            !dialogContext.mounted) {
+                          return;
+                        }
+                        if (ok) {
+                          Navigator.pop(dialogContext);
+                          widget.onSaved();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Production entry updated. Inventory refreshed.',
+                              ),
+                              backgroundColor: AppTheme.successGreen,
+                            ),
+                          );
+                        } else {
+                          setDState(() => saving = false);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                ApiService.lastError ??
+                                    'Production entry update failed',
+                              ),
+                              backgroundColor: AppTheme.dangerRed,
+                            ),
+                          );
+                        }
+                      },
+                icon: saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.save_outlined),
+                label: const Text('Save Changes'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    producedCtrl.dispose();
+    rejectedCtrl.dispose();
+    mixedCtrl.dispose();
+  }
+
+  Future<void> _deleteEntry(ProductionEntry entry) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Delete Production Entry?'),
+        content: Text(
+          '${entry.productName} ${entry.brand} ${entry.color} ka ${entry.netQty} net pcs entry delete hoga. Inventory and raw material stock reverse ho jayega.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.dangerRed,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+    final ok = await ApiService.deleteProductionEntry(entry.id);
+    if (!mounted) return;
+    if (ok) {
+      widget.onSaved();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Production entry deleted. Inventory refreshed.'),
+          backgroundColor: AppTheme.successGreen,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ApiService.lastError ?? 'Production entry delete failed',
+          ),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+    }
+  }
+
   @override
   void dispose() {
     _producedCtrl.dispose();
@@ -614,9 +1391,8 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
         return a.brand.toLowerCase().compareTo(b.brand.toLowerCase());
       });
 
-    final todayEntries = widget.entries
-        .where((e) => e.date.day == DateTime.now().day)
-        .toList();
+    final allEntries = List<ProductionEntry>.from(widget.entries)
+      ..sort((a, b) => b.date.compareTo(a.date));
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -1031,9 +1807,25 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
             ),
 
             const SizedBox(height: 28),
-            const SectionHeader(title: "Today's Entries"),
+            const SectionHeader(
+              title: 'All Entries',
+              subtitle: 'Edit or delete wrong production logs',
+            ),
             const SizedBox(height: 12),
-            ...todayEntries.map((e) => _EntryRow(entry: e)),
+            if (allEntries.isEmpty)
+              const EmptyState(
+                icon: Icons.receipt_long_outlined,
+                title: 'No Production Entries',
+                subtitle: 'Production logs will appear here',
+              )
+            else
+              ...allEntries.map(
+                (entry) => _EntryRow(
+                  entry: entry,
+                  onEdit: () => _showEditEntryDialog(entry),
+                  onDelete: () => _deleteEntry(entry),
+                ),
+              ),
           ],
         ),
       ),
@@ -1043,10 +1835,17 @@ class _ProductionEntryTabState extends State<_ProductionEntryTab> {
 
 class _EntryRow extends StatelessWidget {
   final ProductionEntry entry;
-  const _EntryRow({required this.entry});
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  const _EntryRow({
+    required this.entry,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final fmt = DateFormat('dd MMM, hh:mm a');
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -1095,6 +1894,13 @@ class _EntryRow extends StatelessWidget {
                     color: AppTheme.textSecondary,
                   ),
                 ),
+                Text(
+                  fmt.format(entry.date),
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: AppTheme.textLight,
+                  ),
+                ),
               ],
             ),
           ),
@@ -1110,8 +1916,42 @@ class _EntryRow extends StatelessWidget {
                 ),
               ),
               Text(
-                '${entry.producedQty} − ${entry.rejectedQty}',
+                '${entry.producedQty} − ${entry.rejectedQty} − ${entry.mixedColorQty}',
                 style: const TextStyle(fontSize: 10, color: AppTheme.textLight),
+              ),
+            ],
+          ),
+          const SizedBox(width: 4),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: AppTheme.textSecondary),
+            onSelected: (value) {
+              if (value == 'edit') onEdit();
+              if (value == 'delete') onDelete();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'edit',
+                child: Row(
+                  children: [
+                    Icon(Icons.edit_outlined, size: 18),
+                    SizedBox(width: 8),
+                    Text('Edit'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'delete',
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.delete_outline,
+                      size: 18,
+                      color: AppTheme.dangerRed,
+                    ),
+                    SizedBox(width: 8),
+                    Text('Delete'),
+                  ],
+                ),
               ),
             ],
           ),

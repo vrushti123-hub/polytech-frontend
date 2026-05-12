@@ -8,7 +8,16 @@ import 'package:intl/intl.dart';
 
 // ── Raw Material Home ─────────────────────────────────────────
 class RMHome extends StatefulWidget {
-  const RMHome({super.key});
+  final int initialTab;
+  final String? initialColor;
+  final List<RawMaterialRequirement> initialRequirements;
+
+  const RMHome({
+    super.key,
+    this.initialTab = 0,
+    this.initialColor,
+    this.initialRequirements = const [],
+  });
 
   @override
   State<RMHome> createState() => _RMHomeState();
@@ -24,7 +33,11 @@ class _RMHomeState extends State<RMHome> with SingleTickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 3, vsync: this);
+    _tabCtrl = TabController(
+      length: 3,
+      vsync: this,
+      initialIndex: widget.initialTab.clamp(0, 2),
+    );
     // Tab switch hone pe reload karo
     _tabCtrl.addListener(() {
       if (!_tabCtrl.indexIsChanging) {
@@ -58,8 +71,10 @@ class _RMHomeState extends State<RMHome> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    final lowCount =
-        _materials.where((m) => m.stockStatus != StockStatus.available).length;
+    final lowMaterials = _materials
+        .where((m) => m.stockStatus != StockStatus.available)
+        .toList();
+    final lowCount = lowMaterials.length;
 
     return Scaffold(
       backgroundColor: AppTheme.surfaceWhite,
@@ -68,16 +83,41 @@ class _RMHomeState extends State<RMHome> with SingleTickerProviderStateMixin {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Raw Materials'),
-            Text('Godown Operator',
-                style: TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF94A3B8),
-                    fontWeight: FontWeight.w400)),
+            Text(
+              'Godown Operator',
+              style: TextStyle(
+                fontSize: 12,
+                color: Color(0xFF94A3B8),
+                fontWeight: FontWeight.w400,
+              ),
+            ),
           ],
         ),
         actions: [
-          NotificationButton(count: lowCount),
-          const SizedBox(width: 4)
+          NotificationButton(
+            count: lowCount,
+            onTap: () => showNotificationSheet(
+              context,
+              title: 'Notifications',
+              notifications: lowMaterials
+                  .map(
+                    (material) => AppNotification(
+                      icon: material.stockStatus == StockStatus.critical
+                          ? Icons.error_outline
+                          : Icons.warning_amber_rounded,
+                      title: material.name,
+                      subtitle:
+                          '${material.currentStockKg.toStringAsFixed(0)} kg available • minimum ${material.minimumStockKg.toStringAsFixed(0)} kg',
+                      color: material.stockStatus == StockStatus.critical
+                          ? AppTheme.dangerRed
+                          : AppTheme.warningAmber,
+                      onTap: () => _tabCtrl.animateTo(0),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          const SizedBox(width: 4),
         ],
         bottom: TabBar(
           controller: _tabCtrl,
@@ -95,28 +135,30 @@ class _RMHomeState extends State<RMHome> with SingleTickerProviderStateMixin {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : TabBarView(
-        controller: _tabCtrl,
-        children: [
-          _StockViewTab(
-            key: ValueKey(_refreshKey),
-            materials: _materials,
-            onRefresh: _loadAll,
-          ),
-          _GRNEntryTab(
-            materials: _materials,
-            onSaved: () async {
-              await _loadAll(); // ✅ GRN save hone ke baad reload
-              // Stock View tab pe jaao automatically
-              _tabCtrl.animateTo(2); // GRN History tab
-            },
-          ),
-          _GRNHistoryTab(
-            key: ValueKey(_refreshKey + 100),
-            entries: _grnEntries,
-            onRefresh: _loadAll,
-          ),
-        ],
-      ),
+              controller: _tabCtrl,
+              children: [
+                _StockViewTab(
+                  key: ValueKey(_refreshKey),
+                  materials: _materials,
+                  onRefresh: _loadAll,
+                ),
+                _GRNEntryTab(
+                  materials: _materials,
+                  initialColor: widget.initialColor,
+                  initialRequirements: widget.initialRequirements,
+                  onSaved: () async {
+                    await _loadAll(); // ✅ GRN save hone ke baad reload
+                    // Stock View tab pe jaao automatically
+                    _tabCtrl.animateTo(2); // GRN History tab
+                  },
+                ),
+                _GRNHistoryTab(
+                  key: ValueKey(_refreshKey + 100),
+                  entries: _grnEntries,
+                  onRefresh: _loadAll,
+                ),
+              ],
+            ),
     );
   }
 }
@@ -125,8 +167,11 @@ class _RMHomeState extends State<RMHome> with SingleTickerProviderStateMixin {
 class _StockViewTab extends StatefulWidget {
   final List<RawMaterial> materials;
   final VoidCallback onRefresh;
-  const _StockViewTab(
-      {super.key, required this.materials, required this.onRefresh});
+  const _StockViewTab({
+    super.key,
+    required this.materials,
+    required this.onRefresh,
+  });
 
   @override
   State<_StockViewTab> createState() => _StockViewTabState();
@@ -142,17 +187,18 @@ class _StockViewTabState extends State<_StockViewTab> {
         ? allMaterials
         : _filter == 'Low'
         ? allMaterials
-        .where((m) => m.stockStatus != StockStatus.available)
-        .toList()
+              .where((m) => m.stockStatus != StockStatus.available)
+              .toList()
         : allMaterials
-        .where((m) => m.stockStatus == StockStatus.available)
-        .toList();
+              .where((m) => m.stockStatus == StockStatus.available)
+              .toList();
 
     final criticalCount = allMaterials
         .where((m) => m.stockStatus == StockStatus.critical)
         .length;
-    final lowCount =
-        allMaterials.where((m) => m.stockStatus == StockStatus.low).length;
+    final lowCount = allMaterials
+        .where((m) => m.stockStatus == StockStatus.low)
+        .length;
 
     return RefreshIndicator(
       onRefresh: () async => widget.onRefresh(),
@@ -210,24 +256,27 @@ class _StockViewTabState extends State<_StockViewTab> {
             Row(
               children: [
                 _FilterChip(
-                    label: 'All',
-                    count: allMaterials.length,
-                    selected: _filter == 'All',
-                    onTap: () => setState(() => _filter = 'All')),
+                  label: 'All',
+                  count: allMaterials.length,
+                  selected: _filter == 'All',
+                  onTap: () => setState(() => _filter = 'All'),
+                ),
                 const SizedBox(width: 8),
                 _FilterChip(
-                    label: 'Low',
-                    count: lowCount + criticalCount,
-                    selected: _filter == 'Low',
-                    onTap: () => setState(() => _filter = 'Low'),
-                    color: AppTheme.dangerRed),
+                  label: 'Low',
+                  count: lowCount + criticalCount,
+                  selected: _filter == 'Low',
+                  onTap: () => setState(() => _filter = 'Low'),
+                  color: AppTheme.dangerRed,
+                ),
                 const SizedBox(width: 8),
                 _FilterChip(
-                    label: 'OK',
-                    count: allMaterials.length - lowCount - criticalCount,
-                    selected: _filter == 'OK',
-                    onTap: () => setState(() => _filter = 'OK'),
-                    color: AppTheme.successGreen),
+                  label: 'OK',
+                  count: allMaterials.length - lowCount - criticalCount,
+                  selected: _filter == 'OK',
+                  onTap: () => setState(() => _filter = 'OK'),
+                  color: AppTheme.successGreen,
+                ),
               ],
             ),
             const SizedBox(height: 14),
@@ -247,12 +296,13 @@ class _FilterChip extends StatelessWidget {
   final VoidCallback onTap;
   final Color? color;
 
-  const _FilterChip(
-      {required this.label,
-        required this.count,
-        required this.selected,
-        required this.onTap,
-        this.color});
+  const _FilterChip({
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+    this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -266,11 +316,14 @@ class _FilterChip extends StatelessWidget {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: selected ? c : AppTheme.borderGrey),
         ),
-        child: Text('$label ($count)',
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: selected ? Colors.white : AppTheme.textSecondary)),
+        child: Text(
+          '$label ($count)',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: selected ? Colors.white : AppTheme.textSecondary,
+          ),
+        ),
       ),
     );
   }
@@ -314,29 +367,43 @@ class _RMDetailCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(material.name,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14,
-                            color: AppTheme.textPrimary)),
-                    Text(material.supplier,
-                        style: const TextStyle(
-                            fontSize: 12, color: AppTheme.textSecondary)),
+                    Text(
+                      material.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                    Text(
+                      material.supplier,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
                   ],
                 ),
               ),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text('${material.currentStockKg.toStringAsFixed(0)} kg',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 18,
-                          color: color,
-                          letterSpacing: -0.5)),
-                  Text('Min: ${material.minimumStockKg.toStringAsFixed(0)} kg',
-                      style: const TextStyle(
-                          fontSize: 10, color: AppTheme.textLight)),
+                  Text(
+                    '${material.currentStockKg.toStringAsFixed(0)} kg',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 18,
+                      color: color,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  Text(
+                    'Min: ${material.minimumStockKg.toStringAsFixed(0)} kg',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: AppTheme.textLight,
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -360,8 +427,15 @@ class _RMDetailCard extends StatelessWidget {
 // ── GRN Entry Tab ─────────────────────────────────────────────
 class _GRNEntryTab extends StatefulWidget {
   final List<RawMaterial> materials;
+  final String? initialColor;
+  final List<RawMaterialRequirement> initialRequirements;
   final VoidCallback onSaved;
-  const _GRNEntryTab({required this.materials, required this.onSaved});
+  const _GRNEntryTab({
+    required this.materials,
+    required this.onSaved,
+    this.initialColor,
+    this.initialRequirements = const [],
+  });
 
   @override
   State<_GRNEntryTab> createState() => _GRNEntryTabState();
@@ -369,11 +443,36 @@ class _GRNEntryTab extends StatefulWidget {
 
 class _GRNEntryTabState extends State<_GRNEntryTab> {
   final _formKey = GlobalKey<FormState>();
+  String? _productionColor;
+  List<RawMaterialRequirement> _requirements = [];
   String? _selectedMaterial;
   String? _selectedSupplier;
   final _bagsCtrl = TextEditingController();
   final _weightCtrl = TextEditingController();
   bool _saving = false;
+  bool _checking = false;
+
+  static const _productionColors = [
+    'BEIGE',
+    'RED',
+    'ORANGE',
+    'ROSEWOOD',
+    'SANDALWOOD',
+    'COFFEE',
+    'LEATHER BROWN',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _productionColor = widget.initialColor?.toUpperCase();
+    _requirements = List<RawMaterialRequirement>.from(
+      widget.initialRequirements,
+    );
+    if (_productionColor != null && _requirements.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _checkColorStock());
+    }
+  }
 
   int get _bags => int.tryParse(_bagsCtrl.text) ?? 0;
   double get _weight => double.tryParse(_weightCtrl.text) ?? 0;
@@ -382,21 +481,91 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
   String get _grnId =>
       'GRN-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
 
+  String _qtyLabel(double value, String unit) {
+    final qty = value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toStringAsFixed(1);
+    return '$qty $unit'.trim();
+  }
+
+  double _shortageFor(RawMaterialRequirement item) {
+    final shortage = item.requiredQty - item.availableQty;
+    return shortage > 0 ? shortage : 0;
+  }
+
+  Future<void> _checkColorStock() async {
+    if (_productionColor == null) return;
+    setState(() => _checking = true);
+    final check = await ApiService.checkRawMaterialAvailability(
+      brand: 'POLYTECH',
+      color: _productionColor!,
+    );
+    if (!mounted) return;
+    setState(() {
+      _checking = false;
+      _requirements = check?.requirements ?? [];
+    });
+    if (check == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ApiService.lastError ?? 'Raw material check failed'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+    }
+  }
+
+  void _fillFromRequirement(RawMaterialRequirement item) {
+    RawMaterial? material;
+    for (final m in widget.materials) {
+      if (m.name.toLowerCase() == item.materialName.toLowerCase()) {
+        material = m;
+        break;
+      }
+    }
+
+    if (material == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${item.materialName} not found in raw material stock'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+      return;
+    }
+
+    final materialToFill = material;
+    final qty = _shortageFor(item) > 0 ? _shortageFor(item) : item.requiredQty;
+    setState(() {
+      _selectedMaterial = materialToFill.name;
+      _selectedSupplier = materialToFill.supplier;
+      if (item.unit.toUpperCase() == 'BAGS') {
+        _bagsCtrl.text = qty.ceil().toString();
+        _weightCtrl.text = '1';
+      } else {
+        _bagsCtrl.text = '1';
+        _weightCtrl.text = qty == qty.roundToDouble()
+            ? qty.toStringAsFixed(0)
+            : qty.toStringAsFixed(1);
+      }
+    });
+  }
+
   Future<void> _saveGRN() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedMaterial == null || _selectedSupplier == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('Select material and supplier'),
-            backgroundColor: AppTheme.dangerRed),
+          content: Text('Select material and supplier'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
       );
       return;
     }
 
     setState(() => _saving = true);
 
-    final mat =
-    widget.materials.firstWhere((m) => m.name == _selectedMaterial);
+    final mat = widget.materials.firstWhere((m) => m.name == _selectedMaterial);
 
     final grn = GRNEntry(
       id: _grnId,
@@ -417,7 +586,8 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              'GRN saved: ${grn.totalWeight.toStringAsFixed(0)} kg added'),
+            'GRN saved: ${grn.totalWeight.toStringAsFixed(0)} kg added',
+          ),
           backgroundColor: AppTheme.successGreen,
         ),
       );
@@ -431,8 +601,9 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('Error saving GRN'),
-            backgroundColor: AppTheme.dangerRed),
+          content: Text('Error saving GRN'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
       );
     }
   }
@@ -446,7 +617,10 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
 
   @override
   Widget build(BuildContext context) {
-    final materialNames = widget.materials.map((m) => m.name).toList();
+    final materialNames = widget.materials.map((m) => m.name).toList()..sort();
+    final selectedColor = _productionColor;
+    final extraColor = selectedColor == null ? null : [selectedColor];
+    final colorItems = {..._productionColors, ...?extraColor}.toList();
     const suppliers = [
       'Gupta Polymers',
       'Shah Industries',
@@ -466,8 +640,119 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SectionHeader(
-              title: 'GRN Entry',
-              subtitle: 'Record inward raw material receipt',
+              title: 'Add Raw Material',
+              subtitle: 'Select colour to see exact material needed',
+            ),
+            const SizedBox(height: 16),
+
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppTheme.cardWhite,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderGrey),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  AppDropdown(
+                    label: 'Production Colour',
+                    value: _productionColor,
+                    hint: 'Select colour',
+                    items: colorItems,
+                    onChanged: (v) {
+                      setState(() {
+                        _productionColor = v;
+                        _requirements = [];
+                      });
+                      _checkColorStock();
+                    },
+                  ),
+                  if (_checking) ...[
+                    const SizedBox(height: 14),
+                    const LinearProgressIndicator(minHeight: 3),
+                  ],
+                  if (!_checking && _requirements.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    ..._requirements.map((item) {
+                      final shortage = _shortageFor(item);
+                      final hasShortage = shortage > 0;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: hasShortage
+                              ? AppTheme.lightAmber
+                              : AppTheme.lightGreen,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: hasShortage
+                                ? AppTheme.warningAmber
+                                : AppTheme.successGreen,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              hasShortage
+                                  ? Icons.warning_amber_rounded
+                                  : Icons.check_circle_outline,
+                              color: hasShortage
+                                  ? AppTheme.warningAmber
+                                  : AppTheme.successGreen,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    item.materialName,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                      color: AppTheme.textPrimary,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Required ${_qtyLabel(item.requiredQty, item.unit)} • Stock ${item.availableQty.toStringAsFixed(1)}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: AppTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  hasShortage
+                                      ? 'Add ${_qtyLabel(shortage, item.unit)}'
+                                      : 'Available',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                    color: hasShortage
+                                        ? AppTheme.warningAmber
+                                        : AppTheme.successGreen,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                OutlinedButton(
+                                  onPressed: () => _fillFromRequirement(item),
+                                  child: const Text('Fill'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ],
+              ),
             ),
             const SizedBox(height: 16),
 
@@ -479,33 +764,42 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.receipt,
-                      size: 16, color: AppTheme.primaryBlue),
+                  const Icon(
+                    Icons.receipt,
+                    size: 16,
+                    color: AppTheme.primaryBlue,
+                  ),
                   const SizedBox(width: 8),
-                  Text('GRN ID: $_grnId',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
-                          color: AppTheme.primaryBlue)),
+                  Text(
+                    'GRN ID: $_grnId',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      color: AppTheme.primaryBlue,
+                    ),
+                  ),
                   const Spacer(),
-                  Text(DateFormat('dd MMM yyyy').format(DateTime.now()),
-                      style: const TextStyle(
-                          fontSize: 12, color: AppTheme.textSecondary)),
+                  Text(
+                    DateFormat('dd MMM yyyy').format(DateTime.now()),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
                 ],
               ),
             ),
             const SizedBox(height: 16),
 
             AppDropdown(
-              label: 'Material Type',
+              label: 'Raw Material To Add',
               value: _selectedMaterial,
               hint: 'Select raw material',
               items: materialNames,
               onChanged: (v) => setState(() {
                 _selectedMaterial = v;
                 if (v != null) {
-                  final mat =
-                  widget.materials.firstWhere((m) => m.name == v);
+                  final mat = widget.materials.firstWhere((m) => m.name == v);
                   _selectedSupplier = mat.supplier;
                 }
               }),
@@ -525,30 +819,28 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
               children: [
                 Expanded(
                   child: FormFieldWrapper(
-                    label: 'Number of Bags',
+                    label: 'Bags / Units',
                     child: TextFormField(
                       controller: _bagsCtrl,
                       keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly
-                      ],
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       onChanged: (_) => setState(() {}),
                       validator: (v) =>
-                      (int.tryParse(v ?? '') ?? 0) <= 0 ? 'Required' : null,
+                          (int.tryParse(v ?? '') ?? 0) <= 0 ? 'Required' : null,
                     ),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: FormFieldWrapper(
-                    label: 'Weight / Bag (kg)',
+                    label: 'Kg / Unit',
                     child: TextFormField(
                       controller: _weightCtrl,
                       keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
+                        decimal: true,
+                      ),
                       onChanged: (_) => setState(() {}),
-                      validator: (v) =>
-                      (double.tryParse(v ?? '') ?? 0) <= 0
+                      validator: (v) => (double.tryParse(v ?? '') ?? 0) <= 0
                           ? 'Required'
                           : null,
                     ),
@@ -564,22 +856,29 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
                 color: AppTheme.lightGreen,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                    color: AppTheme.successGreen.withOpacity(0.3)),
+                  color: AppTheme.successGreen.withOpacity(0.3),
+                ),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('Total Weight',
-                      style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                          color: AppTheme.textSecondary)),
-                  Text('${_total.toStringAsFixed(1)} kg',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 22,
-                          color: AppTheme.successGreen,
-                          letterSpacing: -0.5)),
+                  const Text(
+                    'Quantity Added',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                  Text(
+                    '${_total.toStringAsFixed(1)} kg',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 22,
+                      color: AppTheme.successGreen,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -592,14 +891,18 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
                 onPressed: _saving ? null : _saveGRN,
                 icon: _saving
                     ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white))
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
                     : const Icon(Icons.add_circle_outline),
-                label: const Text('Save GRN',
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700)),
+                label: const Text(
+                  'Save Raw Material Stock',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                ),
               ),
             ),
           ],
@@ -613,8 +916,11 @@ class _GRNEntryTabState extends State<_GRNEntryTab> {
 class _GRNHistoryTab extends StatelessWidget {
   final List<GRNEntry> entries;
   final VoidCallback onRefresh;
-  const _GRNHistoryTab(
-      {super.key, required this.entries, required this.onRefresh});
+  const _GRNHistoryTab({
+    super.key,
+    required this.entries,
+    required this.onRefresh,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -628,9 +934,10 @@ class _GRNHistoryTab extends StatelessWidget {
           children: const [
             SizedBox(height: 200),
             EmptyState(
-                icon: Icons.history,
-                title: 'No GRN Records',
-                subtitle: 'GRN entries will appear here'),
+              icon: Icons.history,
+              title: 'No GRN Records',
+              subtitle: 'GRN entries will appear here',
+            ),
           ],
         ),
       );
@@ -661,36 +968,53 @@ class _GRNHistoryTab extends StatelessWidget {
                     color: AppTheme.lightGreen,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.inventory_rounded,
-                      color: AppTheme.successGreen, size: 22),
+                  child: const Icon(
+                    Icons.inventory_rounded,
+                    color: AppTheme.successGreen,
+                    size: 22,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(g.materialName,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13,
-                              color: AppTheme.textPrimary)),
-                      Text('${g.supplier} • ${fmt.format(g.date)}',
-                          style: const TextStyle(
-                              fontSize: 11, color: AppTheme.textSecondary)),
+                      Text(
+                        g.materialName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        '${g.supplier} • ${fmt.format(g.date)}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
                     ],
                   ),
                 ),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    Text('${g.totalWeight.toStringAsFixed(0)} kg',
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 14,
-                            color: AppTheme.successGreen)),
-                    Text('${g.numBags} bags',
-                        style: const TextStyle(
-                            fontSize: 11, color: AppTheme.textLight)),
+                    Text(
+                      '${g.totalWeight.toStringAsFixed(0)} kg',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                        color: AppTheme.successGreen,
+                      ),
+                    ),
+                    Text(
+                      '${g.numBags} bags',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.textLight,
+                      ),
+                    ),
                   ],
                 ),
               ],

@@ -240,6 +240,40 @@ class GRNEntry {
   double get totalWeight => numBags * weightPerBag;
 }
 
+class RawMaterialRequirement {
+  final String? materialId;
+  final String materialName;
+  final double requiredQty;
+  final String unit;
+  final double availableQty;
+  final bool isShort;
+
+  const RawMaterialRequirement({
+    this.materialId,
+    required this.materialName,
+    required this.requiredQty,
+    required this.unit,
+    required this.availableQty,
+    required this.isShort,
+  });
+}
+
+class RawMaterialCheckResult {
+  final bool ok;
+  final bool hasFormula;
+  final String? formulaBrand;
+  final List<RawMaterialRequirement> requirements;
+  final List<RawMaterialRequirement> shortages;
+
+  const RawMaterialCheckResult({
+    required this.ok,
+    required this.hasFormula,
+    this.formulaBrand,
+    required this.requirements,
+    required this.shortages,
+  });
+}
+
 // ── Dispatch / Challan ────────────────────────────────────────
 class Challan {
   final String id;

@@ -19,6 +19,52 @@ class DistributorHome extends StatefulWidget {
 
 class _DistributorHomeState extends State<DistributorHome> {
   int _tab = 0;
+  List<Order> _orders = [];
+  bool _loadingNotifications = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOrdersForNotifications();
+  }
+
+  Future<void> _loadOrdersForNotifications() async {
+    final orders = await ApiService.getOrders(distributorId: widget.user.id);
+    if (!mounted) return;
+    setState(() {
+      _orders = orders;
+      _loadingNotifications = false;
+    });
+  }
+
+  List<Order> get _approvedOrders =>
+      _orders.where((o) => o.status == OrderStatus.approved).toList();
+
+  Future<void> _showNotifications() async {
+    await _loadOrdersForNotifications();
+    if (!mounted) return;
+    showNotificationSheet(
+      context,
+      title: 'Notifications',
+      notifications: _approvedOrders
+          .map(
+            (order) => AppNotification(
+              icon: Icons.check_circle_outline,
+              title: 'Order approved ${order.id}',
+              subtitle:
+                  '${order.totalPieces} pcs approved and ready for dispatch',
+              color: AppTheme.successGreen,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => OrderDetailScreen(order: order),
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +85,13 @@ class _DistributorHomeState extends State<DistributorHome> {
             ),
           ],
         ),
-        actions: const [NotificationButton(count: 2), SizedBox(width: 4)],
+        actions: [
+          NotificationButton(
+            count: _loadingNotifications ? 0 : _approvedOrders.length,
+            onTap: _showNotifications,
+          ),
+          const SizedBox(width: 4),
+        ],
       ),
       body: IndexedStack(
         index: _tab,
@@ -50,7 +102,10 @@ class _DistributorHomeState extends State<DistributorHome> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        onDestinationSelected: (i) {
+          setState(() => _tab = i);
+          _loadOrdersForNotifications();
+        },
         backgroundColor: Colors.white,
         indicatorColor: AppTheme.chipBg,
         destinations: const [

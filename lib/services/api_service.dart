@@ -8,6 +8,7 @@ class ApiService {
     'API_URL',
     defaultValue: 'http://localhost:3000/api',
   );
+  static String? lastError;
   // ── Token ─────────────────────────────────────────────────
   static Future<void> saveToken(String token) async {
     final prefs = await SharedPreferences.getInstance();
@@ -231,25 +232,113 @@ class ApiService {
 
   static Future<bool> createProductionEntry(ProductionEntry entry) async {
     try {
+      lastError = null;
       final res = await http.post(
         Uri.parse('$baseUrl/production/entries'),
         headers: await _headers(),
-        body: jsonEncode({
-          'id': entry.id,
-          'machine_number': entry.machineNumber,
-          'product_id': entry.productId,
-          'product_name': entry.productName,
-          'brand': entry.brand,
-          'color': entry.color,
-          'produced_qty': entry.producedQty,
-          'rejected_qty': entry.rejectedQty,
-          'mixed_color_qty': entry.mixedColorQty,
-          'date': entry.date.toIso8601String(),
-        }),
+        body: jsonEncode(_productionEntryBody(entry)),
       );
-      return res.statusCode == 201;
-    } catch (e) {
+      if (res.statusCode == 201) return true;
+
+      try {
+        final body = jsonDecode(res.body);
+        lastError = body['error']?.toString() ?? 'Production entry failed';
+      } catch (_) {
+        lastError = 'Production entry failed (${res.statusCode})';
+      }
       return false;
+    } catch (e) {
+      lastError = e.toString();
+      return false;
+    }
+  }
+
+  static Future<bool> updateProductionEntry(ProductionEntry entry) async {
+    try {
+      lastError = null;
+      final res = await http.patch(
+        Uri.parse('$baseUrl/production/entries/${entry.id}'),
+        headers: await _headers(),
+        body: jsonEncode(_productionEntryBody(entry)),
+      );
+      if (res.statusCode == 200) return true;
+
+      try {
+        final body = jsonDecode(res.body);
+        lastError =
+            body['error']?.toString() ?? 'Production entry update failed';
+      } catch (_) {
+        lastError = 'Production entry update failed (${res.statusCode})';
+      }
+      return false;
+    } catch (e) {
+      lastError = e.toString();
+      return false;
+    }
+  }
+
+  static Future<bool> deleteProductionEntry(String entryId) async {
+    try {
+      lastError = null;
+      final res = await http.delete(
+        Uri.parse('$baseUrl/production/entries/$entryId'),
+        headers: await _headers(),
+      );
+      if (res.statusCode == 200) return true;
+
+      try {
+        final body = jsonDecode(res.body);
+        lastError =
+            body['error']?.toString() ?? 'Production entry delete failed';
+      } catch (_) {
+        lastError = 'Production entry delete failed (${res.statusCode})';
+      }
+      return false;
+    } catch (e) {
+      lastError = e.toString();
+      return false;
+    }
+  }
+
+  static Map<String, dynamic> _productionEntryBody(ProductionEntry entry) {
+    return {
+      'id': entry.id,
+      'machine_number': entry.machineNumber,
+      'product_id': entry.productId,
+      'product_name': entry.productName,
+      'brand': entry.brand,
+      'color': entry.color,
+      'produced_qty': entry.producedQty,
+      'rejected_qty': entry.rejectedQty,
+      'mixed_color_qty': entry.mixedColorQty,
+      'date': entry.date.toIso8601String(),
+    };
+  }
+
+  static Future<RawMaterialCheckResult?> checkRawMaterialAvailability({
+    required String brand,
+    required String color,
+  }) async {
+    try {
+      lastError = null;
+      final uri = Uri.parse(
+        '$baseUrl/production/raw-check',
+      ).replace(queryParameters: {'brand': brand, 'color': color});
+      final res = await http.get(uri, headers: await _headers());
+      if (res.statusCode == 200) {
+        return _parseRawMaterialCheck(jsonDecode(res.body));
+      }
+
+      try {
+        final body = jsonDecode(res.body);
+        lastError = body['error']?.toString() ?? 'Raw material check failed';
+      } catch (_) {
+        lastError = 'Raw material check failed (${res.statusCode})';
+      }
+      return null;
+    } catch (e) {
+      lastError = e.toString();
+      return null;
     }
   }
 
@@ -501,6 +590,22 @@ class ApiService {
     }
   }
 
+  static Future<bool> updateChallanPhoto(
+    String challanId,
+    String truckPhotoUrl,
+  ) async {
+    try {
+      final res = await http.patch(
+        Uri.parse('$baseUrl/dispatch/$challanId/photo'),
+        headers: await _headers(),
+        body: jsonEncode({'truck_photo_url': truckPhotoUrl}),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // ── Parsers ───────────────────────────────────────────────
   static Order _parseOrder(Map<String, dynamic> o) {
     return Order(
@@ -602,6 +707,37 @@ class ApiService {
       numBags: g['num_bags'],
       weightPerBag: (g['weight_per_bag'] as num).toDouble(),
       date: DateTime.parse(g['date']),
+    );
+  }
+
+  static RawMaterialCheckResult _parseRawMaterialCheck(
+    Map<String, dynamic> data,
+  ) {
+    RawMaterialRequirement parseRequirement(dynamic value) {
+      final m = value as Map<String, dynamic>;
+      return RawMaterialRequirement(
+        materialId: m['material_id']?.toString(),
+        materialName: m['material_name']?.toString() ?? '',
+        requiredQty: (m['required_qty'] as num? ?? 0).toDouble(),
+        unit: m['unit']?.toString() ?? '',
+        availableQty: (m['available_qty'] as num? ?? 0).toDouble(),
+        isShort: m['is_short'] == true,
+      );
+    }
+
+    final requirements = (data['requirements'] as List<dynamic>? ?? [])
+        .map(parseRequirement)
+        .toList();
+    final shortages = (data['shortages'] as List<dynamic>? ?? [])
+        .map(parseRequirement)
+        .toList();
+
+    return RawMaterialCheckResult(
+      ok: data['ok'] == true,
+      hasFormula: data['has_formula'] == true,
+      formulaBrand: data['formula_brand']?.toString(),
+      requirements: requirements,
+      shortages: shortages,
     );
   }
 

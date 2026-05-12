@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import '../../theme/app_theme.dart';
 import '../../models/models.dart';
@@ -25,6 +27,7 @@ class _OwnerDashboardState extends State<OwnerDashboard> {
   List<RawMaterial> _rawMaterials = [];
   List<ProductionEntry> _entries = [];
   List<User> _distributors = [];
+  List<Challan> _challans = [];
   bool _loading = true;
 
   @override
@@ -41,6 +44,7 @@ class _OwnerDashboardState extends State<OwnerDashboard> {
       ApiService.getRawMaterials(),
       ApiService.getProductionEntries(),
       ApiService.getDistributors(),
+      ApiService.getChallans(),
     ]);
     if (mounted) {
       setState(() {
@@ -49,6 +53,7 @@ class _OwnerDashboardState extends State<OwnerDashboard> {
         _rawMaterials = results[2] as List<RawMaterial>;
         _entries = results[3] as List<ProductionEntry>;
         _distributors = results[4] as List<User>;
+        _challans = results[5] as List<Challan>;
         _loading = false;
         _refreshKey++;
       });
@@ -61,6 +66,39 @@ class _OwnerDashboardState extends State<OwnerDashboard> {
 
   int get _pendingOrdersCount =>
       _orders.where((o) => o.status == OrderStatus.pending).length;
+
+  List<Order> get _pendingOrders =>
+      _orders.where((o) => o.status == OrderStatus.pending).toList();
+
+  List<Challan> _challansForOrder(String orderId) =>
+      _challans.where((challan) => challan.orderId == orderId).toList();
+
+  void _showNotifications() {
+    showNotificationSheet(
+      context,
+      title: 'Notifications',
+      notifications: _pendingOrders
+          .map(
+            (order) => AppNotification(
+              icon: Icons.receipt_long_outlined,
+              title: 'Pending order ${order.id}',
+              subtitle:
+                  '${order.distributorName} • ${order.totalPieces} pcs waiting for approval',
+              color: AppTheme.warningAmber,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => _OwnerOrderDetail(
+                    order: order,
+                    challans: _challansForOrder(order.id),
+                  ),
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
 
   DashboardStats get _stats {
     final today = _entries.where((e) => e.date.day == DateTime.now().day);
@@ -96,7 +134,11 @@ class _OwnerDashboardState extends State<OwnerDashboard> {
           ],
         ),
         actions: [
-          if (!_loading) NotificationButton(count: _pendingOrdersCount),
+          if (!_loading)
+            NotificationButton(
+              count: _pendingOrdersCount,
+              onTap: _showNotifications,
+            ),
           const SizedBox(width: 4),
         ],
       ),
@@ -112,18 +154,35 @@ class _OwnerDashboardState extends State<OwnerDashboard> {
                   inventory: _inventory,
                   entries: _entries,
                   onRefresh: _loadAll,
+                  onPendingOrdersTap: () => setState(() => _tab = 1),
+                  onDispatchedTap: () => setState(() => _tab = 1),
+                  onProductionTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ProductionHome()),
+                  ).then((_) => _loadAll()),
+                  onMachinesTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ProductionHome()),
+                  ).then((_) => _loadAll()),
                 ),
-                _OrdersTab(key: ValueKey(_refreshKey + 100), orders: _orders),
+                _OrdersTab(
+                  key: ValueKey(_refreshKey + 100),
+                  orders: _orders,
+                  challans: _challans,
+                ),
                 _InventoryTab(
                   key: ValueKey(_refreshKey + 200),
                   inventory: _inventory,
                   rawMaterials: _rawMaterials,
+                  challans: _challans,
+                  entries: _entries,
                   onRefresh: _loadAll,
                 ),
                 _DistributorsTab(
                   key: ValueKey(_refreshKey + 300),
                   distributors: _distributors,
                   orders: _orders,
+                  challans: _challans,
                 ),
               ],
             ),
@@ -169,6 +228,10 @@ class _OverviewTab extends StatelessWidget {
   final List<InventoryItem> inventory;
   final List<ProductionEntry> entries;
   final VoidCallback onRefresh;
+  final VoidCallback onPendingOrdersTap;
+  final VoidCallback onDispatchedTap;
+  final VoidCallback onProductionTap;
+  final VoidCallback onMachinesTap;
 
   const _OverviewTab({
     super.key,
@@ -177,6 +240,10 @@ class _OverviewTab extends StatelessWidget {
     required this.inventory,
     required this.entries,
     required this.onRefresh,
+    required this.onPendingOrdersTap,
+    required this.onDispatchedTap,
+    required this.onProductionTap,
+    required this.onMachinesTap,
   });
 
   @override
@@ -276,7 +343,7 @@ class _OverviewTab extends StatelessWidget {
                   icon: Icons.pending_actions_rounded,
                   color: AppTheme.warningAmber,
                   bgColor: AppTheme.lightAmber,
-                  onTap: () {},
+                  onTap: onPendingOrdersTap,
                 ),
                 StatCard(
                   title: 'Dispatched Today',
@@ -284,6 +351,7 @@ class _OverviewTab extends StatelessWidget {
                   icon: Icons.local_shipping_rounded,
                   color: AppTheme.successGreen,
                   bgColor: AppTheme.lightGreen,
+                  onTap: onDispatchedTap,
                 ),
                 StatCard(
                   title: "Today's Output",
@@ -291,6 +359,7 @@ class _OverviewTab extends StatelessWidget {
                   icon: Icons.precision_manufacturing,
                   color: AppTheme.primaryBlue,
                   bgColor: AppTheme.chipBg,
+                  onTap: onProductionTap,
                 ),
                 StatCard(
                   title: 'Active Machines',
@@ -298,6 +367,7 @@ class _OverviewTab extends StatelessWidget {
                   icon: Icons.settings_rounded,
                   color: const Color(0xFF7C3AED),
                   bgColor: const Color(0xFFF3E8FF),
+                  onTap: onMachinesTap,
                 ),
               ],
             ),
@@ -608,7 +678,12 @@ class _ProductionSummaryCard extends StatelessWidget {
 // ── Orders Tab ────────────────────────────────────────────────
 class _OrdersTab extends StatelessWidget {
   final List<Order> orders;
-  const _OrdersTab({super.key, required this.orders});
+  final List<Challan> challans;
+
+  const _OrdersTab({super.key, required this.orders, required this.challans});
+
+  List<Challan> _challansForOrder(String orderId) =>
+      challans.where((challan) => challan.orderId == orderId).toList();
 
   @override
   Widget build(BuildContext context) {
@@ -642,7 +717,12 @@ class _OrdersTab extends StatelessWidget {
             order: o,
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => _OwnerOrderDetail(order: o)),
+              MaterialPageRoute(
+                builder: (_) => _OwnerOrderDetail(
+                  order: o,
+                  challans: _challansForOrder(o.id),
+                ),
+              ),
             ),
           ),
         ),
@@ -653,7 +733,9 @@ class _OrdersTab extends StatelessWidget {
 
 class _OwnerOrderDetail extends StatelessWidget {
   final Order order;
-  const _OwnerOrderDetail({required this.order});
+  final List<Challan> challans;
+
+  const _OwnerOrderDetail({required this.order, this.challans = const []});
 
   @override
   Widget build(BuildContext context) {
@@ -708,8 +790,209 @@ class _OwnerOrderDetail extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          if (challans.isNotEmpty) ...[
+            const SectionHeader(title: 'Dispatch Details'),
+            const SizedBox(height: 10),
+            ...challans.map((challan) => _TruckPhotoCard(challan: challan)),
+            const SizedBox(height: 6),
+          ],
           ...order.items.map((item) => _OwnerOrderItem(item: item)),
         ],
+      ),
+    );
+  }
+}
+
+class _TruckPhotoCard extends StatelessWidget {
+  final Challan challan;
+
+  const _TruckPhotoCard({required this.challan});
+
+  @override
+  Widget build(BuildContext context) {
+    final fmt = DateFormat('dd MMM yyyy, hh:mm a');
+    final photoSource = (challan.truckPhotoUrl ?? '').trim();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.cardWhite,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderGrey),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (photoSource.isNotEmpty)
+            SizedBox(
+              height: 210,
+              width: double.infinity,
+              child: _TruckPhotoImage(source: photoSource),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              color: AppTheme.chipBg,
+              child: const Row(
+                children: [
+                  Icon(
+                    Icons.image_not_supported_outlined,
+                    color: AppTheme.textSecondary,
+                    size: 24,
+                  ),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Truck photo not saved for this challan',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppTheme.chipBg,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.local_shipping_outlined,
+                        color: AppTheme.primaryBlue,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        challan.id,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${challan.totalPieces} pcs',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.successGreen,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _OwnerDispatchDetailRow(
+                  'Dispatch Date',
+                  fmt.format(challan.dispatchDate),
+                ),
+                _OwnerDispatchDetailRow(
+                  'Vehicle Number',
+                  challan.vehicleNumber,
+                ),
+                _OwnerDispatchDetailRow('Driver Name', challan.driverName),
+                _OwnerDispatchDetailRow('Driver Phone', challan.driverPhone),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OwnerDispatchDetailRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _OwnerDispatchDetailRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 7),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ),
+          Text(
+            value.trim().isEmpty ? '-' : value,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TruckPhotoImage extends StatelessWidget {
+  final String source;
+
+  const _TruckPhotoImage({required this.source});
+
+  @override
+  Widget build(BuildContext context) {
+    if (source.startsWith('data:image')) {
+      try {
+        final base64Part = source.substring(source.indexOf(',') + 1);
+        return Image.memory(
+          base64Decode(base64Part),
+          fit: BoxFit.contain,
+          errorBuilder: (_, _, _) => const _TruckPhotoError(),
+        );
+      } catch (_) {
+        return const _TruckPhotoError();
+      }
+    }
+
+    return Image.network(
+      source,
+      fit: BoxFit.contain,
+      errorBuilder: (_, _, _) => const _TruckPhotoError(),
+    );
+  }
+}
+
+class _TruckPhotoError extends StatelessWidget {
+  const _TruckPhotoError();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTheme.chipBg,
+      child: const Center(
+        child: Icon(
+          Icons.broken_image_outlined,
+          color: AppTheme.textSecondary,
+          size: 36,
+        ),
       ),
     );
   }
@@ -800,11 +1083,13 @@ class _OwnerOrderItem extends StatelessWidget {
 class _DistributorsTab extends StatelessWidget {
   final List<User> distributors;
   final List<Order> orders;
+  final List<Challan> challans;
 
   const _DistributorsTab({
     super.key,
     required this.distributors,
     required this.orders,
+    required this.challans,
   });
 
   @override
@@ -888,6 +1173,7 @@ class _DistributorsTab extends StatelessWidget {
                   builder: (_) => _DistributorOrdersScreen(
                     distributor: distributor,
                     orders: distributorOrders,
+                    challans: challans,
                   ),
                 ),
               ),
@@ -902,11 +1188,16 @@ class _DistributorsTab extends StatelessWidget {
 class _DistributorOrdersScreen extends StatelessWidget {
   final User distributor;
   final List<Order> orders;
+  final List<Challan> challans;
 
   const _DistributorOrdersScreen({
     required this.distributor,
     required this.orders,
+    required this.challans,
   });
+
+  List<Challan> _challansForOrder(String orderId) =>
+      challans.where((challan) => challan.orderId == orderId).toList();
 
   @override
   Widget build(BuildContext context) {
@@ -975,7 +1266,12 @@ class _DistributorOrdersScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                ...orders.map((order) => _DistributorOrderPanel(order: order)),
+                ...orders.map(
+                  (order) => _DistributorOrderPanel(
+                    order: order,
+                    challans: _challansForOrder(order.id),
+                  ),
+                ),
               ],
             ),
     );
@@ -1024,8 +1320,9 @@ class _MiniSummary extends StatelessWidget {
 
 class _DistributorOrderPanel extends StatelessWidget {
   final Order order;
+  final List<Challan> challans;
 
-  const _DistributorOrderPanel({required this.order});
+  const _DistributorOrderPanel({required this.order, required this.challans});
 
   @override
   Widget build(BuildContext context) {
@@ -1047,7 +1344,8 @@ class _DistributorOrderPanel extends StatelessWidget {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) => _OwnerOrderDetail(order: order),
+                builder: (_) =>
+                    _OwnerOrderDetail(order: order, challans: challans),
               ),
             ),
             borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
@@ -1176,12 +1474,16 @@ class _StatusSummary extends StatelessWidget {
 class _InventoryTab extends StatefulWidget {
   final List<InventoryItem> inventory;
   final List<RawMaterial> rawMaterials;
+  final List<Challan> challans;
+  final List<ProductionEntry> entries;
   final VoidCallback onRefresh;
 
   const _InventoryTab({
     super.key,
     required this.inventory,
     required this.rawMaterials,
+    required this.challans,
+    required this.entries,
     required this.onRefresh,
   });
 
@@ -1191,6 +1493,42 @@ class _InventoryTab extends StatefulWidget {
 
 class _InventoryTabState extends State<_InventoryTab> {
   int _selected = 0; // 0 = Finished Goods, 1 = Raw Materials
+
+  Map<String, int> get _todayDispatchByItem {
+    final today = DateTime.now();
+    final totals = <String, int>{};
+    for (final challan in widget.challans) {
+      final date = challan.dispatchDate;
+      final isToday =
+          date.year == today.year &&
+          date.month == today.month &&
+          date.day == today.day;
+      if (!isToday) continue;
+
+      for (final item in challan.items) {
+        final key = _inventoryKey(item.productId, item.brand, item.color);
+        totals[key] = (totals[key] ?? 0) + item.quantity;
+      }
+    }
+    return totals;
+  }
+
+  Map<String, int> get _todayProductionByItem {
+    final today = DateTime.now();
+    final totals = <String, int>{};
+    for (final entry in widget.entries) {
+      final date = entry.date;
+      final isToday =
+          date.year == today.year &&
+          date.month == today.month &&
+          date.day == today.day;
+      if (!isToday || entry.netQty <= 0) continue;
+
+      final key = _inventoryKey(entry.productId, entry.brand, entry.color);
+      totals[key] = (totals[key] ?? 0) + entry.netQty;
+    }
+    return totals;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1296,7 +1634,11 @@ class _InventoryTabState extends State<_InventoryTab> {
           child: RefreshIndicator(
             onRefresh: () async => widget.onRefresh(),
             child: _selected == 0
-                ? _FinishedGoodsList(inventory: widget.inventory)
+                ? _FinishedGoodsList(
+                    inventory: widget.inventory,
+                    todayDispatchByItem: _todayDispatchByItem,
+                    todayProductionByItem: _todayProductionByItem,
+                  )
                 : _RawMaterialsList(rawMaterials: widget.rawMaterials),
           ),
         ),
@@ -1305,9 +1647,19 @@ class _InventoryTabState extends State<_InventoryTab> {
   }
 }
 
+String _inventoryKey(String productId, String brand, String color) =>
+    '${productId.toLowerCase()}|${brand.toLowerCase()}|${color.toLowerCase()}';
+
 class _FinishedGoodsList extends StatelessWidget {
   final List<InventoryItem> inventory;
-  const _FinishedGoodsList({required this.inventory});
+  final Map<String, int> todayDispatchByItem;
+  final Map<String, int> todayProductionByItem;
+
+  const _FinishedGoodsList({
+    required this.inventory,
+    required this.todayDispatchByItem,
+    required this.todayProductionByItem,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1318,14 +1670,157 @@ class _FinishedGoodsList extends StatelessWidget {
         subtitle: 'No finished goods found',
       );
     }
+
+    final sortedInventory = List<InventoryItem>.from(inventory)
+      ..sort((a, b) {
+        final aMinus =
+            todayDispatchByItem[_inventoryKey(a.productId, a.brand, a.color)] ??
+            0;
+        final bMinus =
+            todayDispatchByItem[_inventoryKey(b.productId, b.brand, b.color)] ??
+            0;
+        final aPlus =
+            todayProductionByItem[_inventoryKey(
+              a.productId,
+              a.brand,
+              a.color,
+            )] ??
+            0;
+        final bPlus =
+            todayProductionByItem[_inventoryKey(
+              b.productId,
+              b.brand,
+              b.color,
+            )] ??
+            0;
+        final aMovement = aMinus + aPlus;
+        final bMovement = bMinus + bPlus;
+        if (aMovement != bMovement) return bMovement.compareTo(aMovement);
+
+        final productCompare = a.productName.toLowerCase().compareTo(
+          b.productName.toLowerCase(),
+        );
+        if (productCompare != 0) return productCompare;
+
+        final brandCompare = a.brand.toLowerCase().compareTo(
+          b.brand.toLowerCase(),
+        );
+        if (brandCompare != 0) return brandCompare;
+
+        return a.color.toLowerCase().compareTo(b.color.toLowerCase());
+      });
+
     return ListView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
-      itemCount: inventory.length,
+      itemCount: sortedInventory.length + 1,
       itemBuilder: (_, i) {
-        final item = inventory[i];
+        if (i == 0) {
+          final totalMinusToday = todayDispatchByItem.values.fold(
+            0,
+            (sum, qty) => sum + qty,
+          );
+          final totalPlusToday = todayProductionByItem.values.fold(
+            0,
+            (sum, qty) => sum + qty,
+          );
+          final netToday = totalPlusToday - totalMinusToday;
+          return Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.lightRed,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppTheme.dangerRed.withOpacity(0.25)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.remove_shopping_cart_outlined,
+                    color: AppTheme.dangerRed,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Today\'s Movement',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        'Production added and dispatch reduced',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '+$totalPlusToday pcs',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                        color: AppTheme.successGreen,
+                      ),
+                    ),
+                    Text(
+                      '-$totalMinusToday pcs',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                        color: AppTheme.dangerRed,
+                      ),
+                    ),
+                    Text(
+                      '${netToday >= 0 ? '+' : ''}$netToday net',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        }
+
+        final item = sortedInventory[i - 1];
         final isLow = item.currentStock == 0;
         final imagePath = CatalogImageResolver.forInventoryItem(item);
+        final minusToday =
+            todayDispatchByItem[_inventoryKey(
+              item.productId,
+              item.brand,
+              item.color,
+            )] ??
+            0;
+        final plusToday =
+            todayProductionByItem[_inventoryKey(
+              item.productId,
+              item.brand,
+              item.color,
+            )] ??
+            0;
+        final netToday = plusToday - minusToday;
         return Container(
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(14),
@@ -1380,6 +1875,76 @@ class _FinishedGoodsList extends StatelessWidget {
                     'pcs available',
                     style: TextStyle(fontSize: 10, color: AppTheme.textLight),
                   ),
+                  if (plusToday > 0) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppTheme.lightGreen,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppTheme.successGreen.withOpacity(0.25),
+                        ),
+                      ),
+                      child: Text(
+                        '+$plusToday today',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.successGreen,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (minusToday > 0) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppTheme.lightRed,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppTheme.dangerRed.withOpacity(0.25),
+                        ),
+                      ),
+                      child: Text(
+                        '-$minusToday today',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.dangerRed,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (plusToday > 0 || minusToday > 0) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppTheme.chipBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderGrey),
+                      ),
+                      child: Text(
+                        '${netToday >= 0 ? '+' : ''}$netToday net today',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ],

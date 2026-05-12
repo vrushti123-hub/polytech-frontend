@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../theme/app_theme.dart';
 import '../../models/models.dart';
 import '../../services/api_service.dart';
@@ -37,12 +40,48 @@ class _DispatchHomeState extends State<DispatchHome>
   Future<void> _loadOrders() async {
     setState(() => _loading = true);
     final orders = await ApiService.getOrders();
-    if (mounted)
+    if (mounted) {
       setState(() {
         _orders = orders;
         _loading = false;
         _refreshKey++;
       });
+    }
+  }
+
+  List<Order> get _pendingNotifications => _orders
+      .where(
+        (o) =>
+            o.status == OrderStatus.pending || o.status == OrderStatus.partial,
+      )
+      .toList();
+
+  void _showNotifications() {
+    showNotificationSheet(
+      context,
+      title: 'Notifications',
+      notifications: _pendingNotifications
+          .map(
+            (order) => AppNotification(
+              icon: Icons.local_shipping_outlined,
+              title:
+                  '${order.status == OrderStatus.partial ? 'Partial' : 'Pending'} order ${order.id}',
+              subtitle:
+                  '${order.distributorName} • ${order.totalPieces} pcs needs dispatch action',
+              color: order.status == OrderStatus.partial
+                  ? AppTheme.warningAmber
+                  : AppTheme.primaryBlue,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      DispatchOrderDetail(order: order, onUpdate: _loadOrders),
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
   }
 
   @override
@@ -85,7 +124,7 @@ class _DispatchHomeState extends State<DispatchHome>
           ],
         ),
         actions: [
-          NotificationButton(count: pending.length),
+          NotificationButton(count: pending.length, onTap: _showNotifications),
           const SizedBox(width: 4),
         ],
         bottom: TabBar(
@@ -188,6 +227,8 @@ class DispatchOrderDetail extends StatefulWidget {
 
 class _DispatchOrderDetailState extends State<DispatchOrderDetail> {
   bool _checkingStock = true;
+  List<Challan> _orderChallans = [];
+  final _detailImagePicker = ImagePicker();
 
   @override
   void initState() {
@@ -197,10 +238,16 @@ class _DispatchOrderDetailState extends State<DispatchOrderDetail> {
 
   Future<void> _checkStock() async {
     await ApiService.checkOrderStock(widget.order.id);
-    final updatedOrders = await ApiService.getOrders();
+    final updatedOrdersFuture = ApiService.getOrders();
+    final challansFuture = ApiService.getChallans();
+    final updatedOrders = await updatedOrdersFuture;
+    final challans = await challansFuture;
     final updatedOrder = updatedOrders
         .where((o) => o.id == widget.order.id)
         .firstOrNull;
+    final orderChallans = challans
+        .where((challan) => challan.orderId == widget.order.id)
+        .toList();
     if (updatedOrder != null && mounted) {
       setState(() {
         for (int i = 0; i < widget.order.items.length; i++) {
@@ -209,10 +256,16 @@ class _DispatchOrderDetailState extends State<DispatchOrderDetail> {
                 updatedOrder.items[i].stockAvailable;
           }
         }
+        _orderChallans = orderChallans;
         _checkingStock = false;
       });
     } else {
-      if (mounted) setState(() => _checkingStock = false);
+      if (mounted) {
+        setState(() {
+          _orderChallans = orderChallans;
+          _checkingStock = false;
+        });
+      }
     }
   }
 
@@ -243,6 +296,82 @@ class _DispatchOrderDetailState extends State<DispatchOrderDetail> {
         ),
       );
     }
+  }
+
+  Future<void> _uploadPhotoForChallan(Challan challan) async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_rounded),
+              title: const Text('Take Photo'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded),
+              title: const Text('Upload From Gallery'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+
+    try {
+      final picked = await _detailImagePicker.pickImage(
+        source: source,
+        maxWidth: 900,
+        imageQuality: 45,
+      );
+      if (picked == null) return;
+
+      final bytes = await picked.readAsBytes();
+      final photoDataUrl =
+          'data:${_mimeTypeForFile(picked.name)};base64,${base64Encode(bytes)}';
+      final saved = await ApiService.updateChallanPhoto(
+        challan.id,
+        photoDataUrl,
+      );
+      if (!mounted) return;
+
+      if (saved) {
+        setState(() => challan.truckPhotoUrl = photoDataUrl);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Truck photo saved'),
+            backgroundColor: AppTheme.successGreen,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not save truck photo'),
+            backgroundColor: AppTheme.dangerRed,
+          ),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not upload truck photo'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+    }
+  }
+
+  String _mimeTypeForFile(String name) {
+    final extension = name.split('.').last.toLowerCase();
+    if (extension == 'png') return 'image/png';
+    if (extension == 'webp') return 'image/webp';
+    return 'image/jpeg';
   }
 
   @override
@@ -327,6 +456,18 @@ class _DispatchOrderDetailState extends State<DispatchOrderDetail> {
                     ),
                   ),
                   const SizedBox(height: 16),
+
+                  if (_orderChallans.isNotEmpty) ...[
+                    const SectionHeader(title: 'Dispatch Details'),
+                    const SizedBox(height: 10),
+                    ..._orderChallans.map(
+                      (challan) => _DispatchTruckPhotoCard(
+                        challan: challan,
+                        onUploadPhoto: () => _uploadPhotoForChallan(challan),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                  ],
 
                   ...o.items.map((item) => _DispatchItemCard(item: item)),
                   const SizedBox(height: 16),
@@ -655,6 +796,207 @@ class _DispatchItemCard extends StatelessWidget {
   }
 }
 
+class _DispatchTruckPhotoCard extends StatelessWidget {
+  final Challan challan;
+  final VoidCallback onUploadPhoto;
+
+  const _DispatchTruckPhotoCard({
+    required this.challan,
+    required this.onUploadPhoto,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fmt = DateFormat('dd MMM yyyy, hh:mm a');
+    final photoSource = (challan.truckPhotoUrl ?? '').trim();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.cardWhite,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderGrey),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (photoSource.isNotEmpty)
+            SizedBox(
+              width: double.infinity,
+              height: 210,
+              child: _DispatchTruckPhotoImage(source: photoSource),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              color: AppTheme.chipBg,
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.image_not_supported_outlined,
+                    color: AppTheme.textSecondary,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Truck photo not saved for this challan',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onUploadPhoto,
+                    icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                    label: const Text('Upload'),
+                  ),
+                ],
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppTheme.chipBg,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.local_shipping_outlined,
+                        color: AppTheme.primaryBlue,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        challan.id,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${challan.totalPieces} pcs',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.successGreen,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _DispatchDetailRow(
+                  'Dispatch Date',
+                  fmt.format(challan.dispatchDate),
+                ),
+                _DispatchDetailRow('Vehicle Number', challan.vehicleNumber),
+                _DispatchDetailRow('Driver Name', challan.driverName),
+                _DispatchDetailRow('Driver Phone', challan.driverPhone),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DispatchDetailRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _DispatchDetailRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 7),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ),
+          Text(
+            value.trim().isEmpty ? '-' : value,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DispatchTruckPhotoImage extends StatelessWidget {
+  final String source;
+
+  const _DispatchTruckPhotoImage({required this.source});
+
+  @override
+  Widget build(BuildContext context) {
+    if (source.startsWith('data:image')) {
+      try {
+        final base64Part = source.substring(source.indexOf(',') + 1);
+        return Image.memory(
+          base64Decode(base64Part),
+          fit: BoxFit.contain,
+          errorBuilder: (_, _, _) => const _DispatchTruckPhotoError(),
+        );
+      } catch (_) {
+        return const _DispatchTruckPhotoError();
+      }
+    }
+
+    return Image.network(
+      source,
+      fit: BoxFit.contain,
+      errorBuilder: (_, _, _) => const _DispatchTruckPhotoError(),
+    );
+  }
+}
+
+class _DispatchTruckPhotoError extends StatelessWidget {
+  const _DispatchTruckPhotoError();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTheme.chipBg,
+      child: const Center(
+        child: Icon(
+          Icons.broken_image_outlined,
+          color: AppTheme.textSecondary,
+          size: 36,
+        ),
+      ),
+    );
+  }
+}
+
 class _VariantChip extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -744,8 +1086,73 @@ class _ChallanScreenState extends State<ChallanScreen> {
   final _driverCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _formKey = GlobalKey<FormState>();
-  bool _photoUploaded = false;
+  final _imagePicker = ImagePicker();
+  Uint8List? _truckPhotoBytes;
+  String? _truckPhotoDataUrl;
+  String? _truckPhotoName;
   bool _saving = false;
+
+  bool get _photoUploaded => _truckPhotoDataUrl != null;
+
+  Future<void> _pickTruckPhoto(ImageSource source) async {
+    try {
+      final picked = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: 900,
+        imageQuality: 45,
+      );
+      if (picked == null) return;
+
+      final bytes = await picked.readAsBytes();
+      final mimeType = _mimeTypeForFile(picked.name);
+      setState(() {
+        _truckPhotoBytes = bytes;
+        _truckPhotoName = picked.name;
+        _truckPhotoDataUrl = 'data:$mimeType;base64,${base64Encode(bytes)}';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not upload truck photo'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showPhotoSourcePicker() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_rounded),
+              title: const Text('Take Photo'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded),
+              title: const Text('Upload From Gallery'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (source != null) await _pickTruckPhoto(source);
+  }
+
+  String _mimeTypeForFile(String name) {
+    final extension = name.split('.').last.toLowerCase();
+    if (extension == 'png') return 'image/png';
+    if (extension == 'webp') return 'image/webp';
+    return 'image/jpeg';
+  }
 
   Future<void> _confirmDispatch() async {
     if (!_formKey.currentState!.validate()) return;
@@ -759,23 +1166,57 @@ class _ChallanScreenState extends State<ChallanScreen> {
       return;
     }
 
-    setState(() => _saving = true);
-
-    int? partialQty = int.tryParse(_partialQtyCtrl.text);
-    bool isPartial = false;
-
-    for (final item in widget.order.items) {
-      int remaining = item.quantity - item.dispatchedQty;
-      if (partialQty != null && partialQty > 0 && partialQty <= remaining) {
-        item.dispatchedQty += partialQty;
-        item.dispatchHistory.add(partialQty);
-      } else {
-        item.dispatchedQty = item.quantity;
-        item.dispatchHistory.add(item.quantity);
-      }
-      if (item.dispatchedQty < item.quantity) isPartial = true;
+    final enteredQty = int.tryParse(_partialQtyCtrl.text.trim());
+    if (_partialQtyCtrl.text.trim().isNotEmpty &&
+        (enteredQty == null || enteredQty <= 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter valid dispatch quantity'),
+          backgroundColor: AppTheme.warningAmber,
+        ),
+      );
+      return;
     }
 
+    setState(() => _saving = true);
+
+    final challanItems = <OrderItem>[];
+
+    for (final item in widget.order.items) {
+      final remaining = item.pendingQty;
+      if (remaining <= 0) continue;
+
+      final dispatchQty = enteredQty == null
+          ? remaining
+          : enteredQty.clamp(1, remaining);
+      item.dispatchedQty += dispatchQty;
+      item.dispatchHistory.add(dispatchQty);
+      challanItems.add(
+        OrderItem(
+          productId: item.productId,
+          productName: item.productName,
+          brand: item.brand,
+          color: item.color,
+          quantity: dispatchQty,
+          dispatchedQty: dispatchQty,
+          stockAvailable: item.stockAvailable,
+        ),
+      );
+    }
+
+    if (challanItems.isEmpty) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No pending quantity left to dispatch'),
+          backgroundColor: AppTheme.warningAmber,
+        ),
+      );
+      return;
+    }
+
+    final isPartial = widget.order.items.any((item) => item.pendingQty > 0);
     final newStatus = isPartial ? 'partial' : 'dispatched';
     widget.order.status = isPartial
         ? OrderStatus.partial
@@ -793,10 +1234,23 @@ class _ChallanScreenState extends State<ChallanScreen> {
       driverName: _driverCtrl.text,
       driverPhone: _phoneCtrl.text,
       dispatchDate: DateTime.now(),
-      items: widget.order.items,
+      items: challanItems,
+      truckPhotoUrl: _truckPhotoDataUrl,
     );
 
-    await ApiService.createChallan(challan);
+    final challanCreated = await ApiService.createChallan(challan);
+    if (!challanCreated) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not save challan photo. Please try again.'),
+          backgroundColor: AppTheme.dangerRed,
+        ),
+      );
+      return;
+    }
+
     await ApiService.updateOrderStatus(widget.order.id, newStatus);
 
     setState(() => _saving = false);
@@ -1071,10 +1525,10 @@ class _ChallanScreenState extends State<ChallanScreen> {
               const SizedBox(height: 20),
 
               GestureDetector(
-                onTap: () => setState(() => _photoUploaded = true),
+                onTap: _showPhotoSourcePicker,
                 child: Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
                     color: _photoUploaded
                         ? AppTheme.lightGreen
@@ -1088,19 +1542,28 @@ class _ChallanScreenState extends State<ChallanScreen> {
                   ),
                   child: Column(
                     children: [
-                      Icon(
-                        _photoUploaded
-                            ? Icons.check_circle
-                            : Icons.camera_alt_rounded,
-                        size: 36,
-                        color: _photoUploaded
-                            ? AppTheme.successGreen
-                            : AppTheme.primaryBlue,
-                      ),
+                      if (_truckPhotoBytes != null)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.memory(
+                            _truckPhotoBytes!,
+                            width: double.infinity,
+                            height: 170,
+                            fit: BoxFit.contain,
+                          ),
+                        )
+                      else
+                        Icon(
+                          Icons.camera_alt_rounded,
+                          size: 36,
+                          color: _photoUploaded
+                              ? AppTheme.successGreen
+                              : AppTheme.primaryBlue,
+                        ),
                       const SizedBox(height: 8),
                       Text(
                         _photoUploaded
-                            ? 'Photo Uploaded ✓'
+                            ? 'Photo Uploaded'
                             : 'Upload Truck Photo',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
@@ -1110,6 +1573,16 @@ class _ChallanScreenState extends State<ChallanScreen> {
                               : AppTheme.primaryBlue,
                         ),
                       ),
+                      if (_truckPhotoName != null)
+                        Text(
+                          _truckPhotoName!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
                       if (!_photoUploaded)
                         const Text(
                           'Tap to capture loading photo',

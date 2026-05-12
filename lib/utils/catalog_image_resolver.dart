@@ -25,7 +25,55 @@ class CatalogImageResolver {
     return _byNameColor['$normalizedName|$normalizedColor'] ??
         _byNameColor['${_norm(name)}|$normalizedColor'] ??
         _byName[_norm(name)] ??
-        _byName[normalizedName];
+        _byName[normalizedName] ??
+        _categoryFallback(normalizedName, normalizedColor);
+  }
+
+  static String? _categoryFallback(
+    String normalizedName,
+    String normalizedColor,
+  ) {
+    if (normalizedName.contains('diningtable') ||
+        normalizedName.contains('table')) {
+      return 'assets/catalog/dining_table_1.png';
+    }
+    if (normalizedName.contains('stool')) {
+      return 'assets/catalog/fancy_stool.png';
+    }
+    if (normalizedName.contains('sumo')) {
+      return 'assets/catalog/sumo_18.png';
+    }
+    if (normalizedName.contains('baby')) {
+      if (normalizedColor.contains('orange')) {
+        return 'assets/catalog/baby_101_gold_orange.png';
+      }
+      if (normalizedColor.contains('red')) {
+        return 'assets/catalog/baby_wonder_red.png';
+      }
+      return 'assets/catalog/baby_101_pink.png';
+    }
+    if (normalizedName.contains('chair') ||
+        normalizedName.contains('mediumback') ||
+        normalizedName.contains('monty') ||
+        normalizedName.contains('star') ||
+        normalizedName.contains('jumbo') ||
+        normalizedName.contains('oscor') ||
+        normalizedName.contains('inox') ||
+        normalizedName.contains('sunday') ||
+        normalizedName.contains('marvella') ||
+        normalizedName.contains('novella') ||
+        normalizedName.contains('sleek') ||
+        normalizedName.contains('crystal') ||
+        normalizedName.contains('austria')) {
+      if (normalizedColor.contains('black')) {
+        return 'assets/catalog/royal_black.png';
+      }
+      if (normalizedColor.contains('red')) {
+        return 'assets/catalog/baby_wonder_red.png';
+      }
+      return 'assets/catalog/sentoza_beige.png';
+    }
+    return null;
   }
 
   static String _baseName(String value) {
